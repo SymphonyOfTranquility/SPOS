@@ -61,19 +61,20 @@ bool check_esc()
     printf("Click on Esc to terminate a process.\n");
     int c;
     scanf("%d", &c);*/
-    sleep(20);
+    sleep(1);
     return true;
 }
 
 void start_process(struct TProcess *child, int k, int val)
 {
-    pid_t pid;
-    pid = fork();
-    if (pid < 0)
+    if (pipe(child->fd) < 0)
+        exit(1);
+    child->pid = fork();
+    if (child->pid < 0)
     {
         exit(EXIT_FAILURE);
     }
-    else if (pid == 0)
+    else if (child->pid  == 0)
     {
         printf("%d\n",k);
         close(child->fd[0]);
@@ -84,15 +85,14 @@ void start_process(struct TProcess *child, int k, int val)
         }
         else if (k == 2)
         {
-            sleep(2);
+            sleep(10);
             ans = f(val);
         }
-        else
+        else if (k == 3)
         {
-            sleep(3);
+            sleep(12);
             ans = g(val);
         }
-
         write_to_pipe(child->fd[1], (int)ans);
         close(child->fd[1]);
         printf("child_proc1 %d %d\n", k, ans);
@@ -100,8 +100,7 @@ void start_process(struct TProcess *child, int k, int val)
     }
     else
     {
-        printf("%d parent\n", pid);
-        child->pid = pid;
+        printf("%d parent\n", child->pid);
     }
 }
 
@@ -114,15 +113,19 @@ struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, 
     FD_SET(proc_input->fd[0], &rfds);
     FD_SET(proc_f->fd[0], &rfds);
     FD_SET(proc_g->fd[0], &rfds);
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
+    tv.tv_sec = 2;
     int counter = 0;
+    bool esc = false;
     struct TAnswer ans;
     bool f_value, g_value;
     while(true)
     {
         printf("a\n");
-        retval = select(FD_SETSIZE, &rfds, NULL, NULL, NULL);
+        if (!esc)
+            retval = select(FD_SETSIZE, &rfds, NULL, NULL, NULL);
+        else
+            retval = select(FD_SETSIZE, &rfds, NULL, NULL, &tv);
+
         printf("ret = %d\n", retval);
         if (retval == -1) {
             printf("error  select()\n");
@@ -131,7 +134,12 @@ struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, 
         {
             if (FD_ISSET(proc_input->fd[0], &rfds)) {
                 printf("inp\n");
-                return ans;
+                esc = true;
+                tv.tv_sec = 2;
+                FD_ZERO(&rfds);
+                FD_SET(proc_f->fd[0], &rfds);
+                FD_SET(proc_g->fd[0], &rfds);
+                //TO DO
             }
             else if (FD_ISSET(proc_f->fd[0], &rfds))
             {
@@ -139,6 +147,7 @@ struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, 
                 f_value = (bool)read_from_pipe(proc_f->fd[0]);
                 if (counter == 2)
                     break;
+                FD_ZERO(&rfds);
                 FD_SET(proc_input->fd[0], &rfds);
                 FD_SET(proc_g->fd[0], &rfds);
                 if (f_value)
@@ -156,6 +165,7 @@ struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, 
                 g_value = (bool)read_from_pipe(proc_g->fd[0]);
                 if (counter == 2)
                     break;
+                FD_ZERO(&rfds);
                 FD_SET(proc_input->fd[0], &rfds);
                 FD_SET(proc_f->fd[0], &rfds);
                 if (g_value)
@@ -167,8 +177,14 @@ struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, 
                     return ans;
                 }
             }
-        } else
+        } else {
             printf("FFF\n");
+            FD_ZERO(&rfds);
+            FD_SET(proc_input->fd[0], &rfds);
+            FD_SET(proc_f->fd[0], &rfds);
+            FD_SET(proc_g->fd[0], &rfds);
+            tv.tv_sec = 2;
+        }
     }
     printf("uuuu %d\n", counter);
     if (counter == 2)
@@ -187,13 +203,6 @@ int main()
     scanf("%d", &variable);
 //    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
     struct TProcess proc_input, proc_f, proc_g;
-    if (pipe(proc_input.fd) < 0)
-        exit(1);
-    if (pipe(proc_f.fd) < 0)
-        exit(1);
-    if (pipe(proc_g.fd) < 0)
-        exit(1);
-
     start_process(&proc_input, 1, variable);
     start_process(&proc_f, 2, variable);
     start_process(&proc_g, 3, variable);
