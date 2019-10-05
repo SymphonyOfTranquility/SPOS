@@ -1,20 +1,34 @@
 #include <stdio.h>
+//#include <curses.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <stdbool.h>
 
 #define BUFFSIZE 100
 
-int f(int x)
+struct TProcess
 {
-    return x*x;
+    pid_t pid;      //process id
+    int fd[2];      //pipe
+};
+
+struct TAnswer
+{
+    bool value;
+    int error_type;
+};
+
+bool f(int x)
+{
+    return (x*x)%2 == 0;
 }
 
-int g(int x)
+bool g(int x)
 {
-    return x+1;
+    return (x+1)%2 == 0;
 }
 
 int read_from_pipe(int file)
@@ -34,7 +48,24 @@ void write_to_pipe(int file, int val)
     return;
 }
 
-int start_process(int child_p[2], int k, int val)
+bool check_esc()
+{
+    /*initscr();
+    keypad(stdscr,TRUE);
+    noecho();
+    char c = 0;
+    do
+        c = getch();
+    while (c != 27);
+    return 0;
+    printf("Click on Esc to terminate a process.\n");
+    int c;
+    scanf("%d", &c);*/
+    sleep(20);
+    return true;
+}
+
+void start_process(struct TProcess *child, int k, int val)
 {
     pid_t pid;
     pid = fork();
@@ -45,41 +76,108 @@ int start_process(int child_p[2], int k, int val)
     else if (pid == 0)
     {
         printf("%d\n",k);
-        close(child_p[0]);
-        int ans;
+        close(child->fd[0]);
+        bool ans;
         if (k == 1)
+        {
+            ans = check_esc();
+        }
+        else if (k == 2)
+        {
+            sleep(2);
             ans = f(val);
+        }
         else
+        {
+            sleep(3);
             ans = g(val);
+        }
 
-        write_to_pipe(child_p[1], ans);
-        close(child_p[1]);
-        printf("child_proc1 %d \n", k);
+        write_to_pipe(child->fd[1], (int)ans);
+        close(child->fd[1]);
+        printf("child_proc1 %d %d\n", k, ans);
         exit(EXIT_SUCCESS);
     }
     else
     {
         printf("%d parent\n", pid);
-        return pid;
+        child->pid = pid;
     }
 }
 
-void set_select(int main_pipe[2], int f_pipe[2], int g_pipe[2])
+struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, struct TProcess *proc_g)
 {
     fd_set rfds;
     struct timeval tv;
     int retval;
     FD_ZERO(&rfds);
-    FD_SET(0, &rfds);
+    FD_SET(proc_input->fd[0], &rfds);
+    FD_SET(proc_f->fd[0], &rfds);
+    FD_SET(proc_g->fd[0], &rfds);
     tv.tv_sec = 5;
     tv.tv_usec = 0;
-    retval = select(1, &rfds, NULL, NULL, &tv);
-    if (retval == -1)
-        perror("select()");
-    else if (retval)
-        printf("dkfrg\n");
-    else
-        printf("FFF\n");
+    int counter = 0;
+    struct TAnswer ans;
+    bool f_value, g_value;
+    while(true)
+    {
+        printf("a\n");
+        retval = select(FD_SETSIZE, &rfds, NULL, NULL, NULL);
+        printf("ret = %d\n", retval);
+        if (retval == -1) {
+            printf("error  select()\n");
+        }
+        else if (retval)
+        {
+            if (FD_ISSET(proc_input->fd[0], &rfds)) {
+                printf("inp\n");
+                return ans;
+            }
+            else if (FD_ISSET(proc_f->fd[0], &rfds))
+            {
+                ++counter;
+                f_value = (bool)read_from_pipe(proc_f->fd[0]);
+                if (counter == 2)
+                    break;
+                FD_SET(proc_input->fd[0], &rfds);
+                FD_SET(proc_g->fd[0], &rfds);
+                if (f_value)
+                {
+                    kill(proc_input->pid, SIGKILL);
+                    kill(proc_g->pid, SIGKILL);
+                    ans.error_type = 1;
+                    ans.value = f_value;
+                    return ans;
+                }
+            }
+            else if (FD_ISSET(proc_g->fd[0], &rfds))
+            {
+                ++counter;
+                g_value = (bool)read_from_pipe(proc_g->fd[0]);
+                if (counter == 2)
+                    break;
+                FD_SET(proc_input->fd[0], &rfds);
+                FD_SET(proc_f->fd[0], &rfds);
+                if (g_value)
+                {
+                    kill(proc_input->pid, SIGKILL);
+                    kill(proc_f->pid, SIGKILL);
+                    ans.error_type = 2;
+                    ans.value = g_value;
+                    return ans;
+                }
+            }
+        } else
+            printf("FFF\n");
+    }
+    printf("uuuu %d\n", counter);
+    if (counter == 2)
+    {
+        ans.value = f_value || g_value;
+        ans.error_type = 0;
+        kill(proc_input->pid, SIGKILL);
+        return ans;
+    }
 }
 
 int main()
@@ -88,36 +186,30 @@ int main()
     printf("Input x: ");
     scanf("%d", &variable);
 //    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
-    int m_pipe[2], f_pipe[2], g_pipe[2];
-    if (pipe(m_pipe) < 0)
+    struct TProcess proc_input, proc_f, proc_g;
+    if (pipe(proc_input.fd) < 0)
         exit(1);
-    if (pipe(f_pipe) < 0)
+    if (pipe(proc_f.fd) < 0)
         exit(1);
-    if (pipe(g_pipe) < 0)
+    if (pipe(proc_g.fd) < 0)
         exit(1);
 
-    int pid_f = start_process(f_pipe, 1, variable);
-    int pid_g = start_process(g_pipe, 2, variable);
+    start_process(&proc_input, 1, variable);
+    start_process(&proc_f, 2, variable);
+    start_process(&proc_g, 3, variable);
 
-    printf("Click on Esc to terminate a process.\n");
-    set_select(m_pipe, f_pipe, g_pipe);
-
-    for (int i = 0;i < 2;  ++i)
-    {
+    struct TAnswer ans = set_select(&proc_input, &proc_f, &proc_g);
+    for (int i = 0;i < 3; ++i) {
         int status;
         int corpse = wait(&status);
-        if (corpse == pid_f)
-        {
-            int ans_f = read_from_pipe(f_pipe[0]);
-            printf("pid F %d %d\n", corpse, ans_f);
-        }
-        else
-        {
-            int ans_g = read_from_pipe(g_pipe[0]);
-            printf("pid G %d %d\n", corpse, ans_g);
-        }
+        if (corpse == proc_f.pid) {
+            printf("F\n");
+        } else if (corpse == proc_g.pid) {
+            printf("G\n");
+        } else
+            printf("asrerarer\n");
     }
-
+    printf("%d %d\n", ans.value, ans.error_type);
     return 0;
 }
 
