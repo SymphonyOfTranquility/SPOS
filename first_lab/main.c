@@ -1,5 +1,5 @@
 #include <stdio.h>
-//#include <curses.h>
+#include <curses.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
@@ -8,17 +8,30 @@
 #include <stdbool.h>
 
 #define BUFFSIZE 100
+#define PROC_INPUT 1
+#define PROC_ESC 2
+#define PROC_ESC_INPUT 3
+#define PROC_F 4
+#define PROC_G 5
 
-struct TProcess
+#define NORMAL 10
+#define FASTER_F 11
+#define FASTER_G 12
+#define TERMINATED_ALL 13
+#define TERMINATED_F 14
+#define TERMINATED_G 15
+
+typedef struct TProcess
 {
     pid_t pid;      //process id
     int fd[2];      //pipe
-};
+} *PTProcess;
 
 struct TAnswer
 {
-    bool value;
     int error_type;
+    bool f_value, ended_f;
+    bool g_value, ended_g;
 };
 
 bool f(int x)
@@ -31,16 +44,16 @@ bool g(int x)
     return (x+1)%2 == 0;
 }
 
-int read_from_pipe(int file)
+bool read_from_pipe(int file)
 {
     char buff[BUFFSIZE];
     read(file, buff, sizeof(buff));
-    int x;
+    bool x;
     sscanf(buff, "%d", &x);
     return x;
 }
 
-void write_to_pipe(int file, int val)
+void write_to_pipe(int file, bool val)
 {
     char buff[BUFFSIZE];
     sprintf(buff,"%d", val);
@@ -48,177 +61,285 @@ void write_to_pipe(int file, int val)
     return;
 }
 
-bool check_esc()
+void check_escape(PTProcess parent, int value)
 {
-    /*initscr();
+    initscr();
+    printw("Value x is %d.\nClick on Esc to terminate a process.\n", value);
+    refresh();
     keypad(stdscr,TRUE);
     noecho();
+
+    fd_set read_fds;
+    int return_val;
     char c = 0;
-    do
-        c = getch();
+
+    do{
+        FD_ZERO(&read_fds);
+        FD_SET(0, &read_fds);
+        FD_SET(parent->fd[0], &read_fds);
+        return_val = select(FD_SETSIZE, &read_fds, NULL, NULL, NULL);
+        if (return_val == -1)
+        {
+            endwin();
+            exit(EXIT_FAILURE);
+        }
+        else if (return_val){
+            if (FD_ISSET(0, &read_fds))
+                c = getch();
+            else {
+                read_from_pipe(parent->fd[0]);
+                break;
+            }
+        }
+    }
     while (c != 27);
-    return 0;
-    printf("Click on Esc to terminate a process.\n");
-    int c;
-    scanf("%d", &c);*/
-    sleep(1);
-    return true;
+    endwin();
+//    printf("go out\n");
+    return;
 }
 
-void start_process(struct TProcess *child, int k, int val)
+
+void start_process(PTProcess parent, PTProcess child, int proc_type, int value);
+
+bool user_input_terminate()
+{
+    bool ok = true;
+    char c;
+    do {
+        c = getchar();
+        if (c == 'y') {
+            ok = true;
+            break;
+        } else if (c == 'n') {
+            ok = false;
+            break;
+        }
+    }
+    while (true);
+    return ok;
+}
+
+bool user_terminate(PTProcess parent)
+{
+    initscr();
+    fd_set read_fds;
+    int return_val;
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    char c = 0;
+    struct TProcess child;
+    start_process(NULL, &child, PROC_ESC_INPUT, 0);
+    bool ok = true;
+    int counter = 60;
+    refresh();
+    do
+    {
+        system("clear");
+        printw("Would you like to terminate process? y/n\n%d sec. left\n", counter);
+        refresh();
+        FD_ZERO(&read_fds);
+        FD_SET(child.fd[0], &read_fds);
+        FD_SET(parent->fd[0], &read_fds);
+        timeout.tv_sec = 1;
+        return_val = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout);
+        if (return_val == -1) {
+            endwin();
+            exit(EXIT_FAILURE);
+        } else if (return_val) {
+            if (FD_ISSET(child.fd[0], &read_fds)) {
+                ok = read_from_pipe(child.fd[0]);
+                break;
+            } else {
+                read_from_pipe(parent->fd[0]);
+                break;
+            }
+        } else {
+            counter -= 1;
+        }
+    }
+    while (counter != 0);
+    kill(child.pid, SIGKILL);
+
+    endwin();
+ //   printf("go out esc %d %d\n", counter, ok);
+    return ok;
+}
+
+void start_process(PTProcess parent, PTProcess child, int proc_type, int value)
 {
     if (pipe(child->fd) < 0)
         exit(1);
     child->pid = fork();
     if (child->pid < 0)
-    {
         exit(EXIT_FAILURE);
-    }
-    else if (child->pid  == 0)
-    {
-        printf("%d\n",k);
+    else if (child->pid == 0) {
         close(child->fd[0]);
-        bool ans;
-        if (k == 1)
-        {
-            ans = check_esc();
-        }
-        else if (k == 2)
-        {
+        bool ans = false;
+        if (proc_type == PROC_INPUT) {
+            check_escape(parent, value);
+        } else if (proc_type == PROC_F) {
+            sleep(5);
+            ans = f(value);
+        } else if (proc_type == PROC_G) {
             sleep(10);
-            ans = f(val);
+            ans = g(value);
+        } else if (proc_type == PROC_ESC) {
+            ans = user_terminate(parent);
         }
-        else if (k == 3)
-        {
-            sleep(12);
-            ans = g(val);
-        }
-        write_to_pipe(child->fd[1], (int)ans);
+        else if (proc_type == PROC_ESC_INPUT)
+            ans = user_input_terminate();
+        write_to_pipe(child->fd[1], ans);
         close(child->fd[1]);
-        printf("child_proc1 %d %d\n", k, ans);
         exit(EXIT_SUCCESS);
-    }
-    else
-    {
-        printf("%d parent\n", child->pid);
     }
 }
 
-struct TAnswer set_select(struct TProcess *proc_input, struct TProcess *proc_f, struct TProcess *proc_g)
+void kill_input_proc(PTProcess proc_main, PTProcess proc_input)
 {
-    fd_set rfds;
-    struct timeval tv;
-    int retval;
-    FD_ZERO(&rfds);
-    FD_SET(proc_input->fd[0], &rfds);
-    FD_SET(proc_f->fd[0], &rfds);
-    FD_SET(proc_g->fd[0], &rfds);
-    tv.tv_sec = 2;
-    int counter = 0;
+    close(proc_main->fd[0]);
+    write_to_pipe(proc_main->fd[1], true);
+    close(proc_main->fd[1]);
+    usleep(1000);
+    kill(proc_input->pid, SIGKILL);
+    return;
+}
+
+void kill_processes(struct TAnswer *ans, PTProcess proc_main, PTProcess proc_input, PTProcess proc_f, PTProcess proc_g)
+{
+    if (!ans->ended_f && !ans->ended_g)
+    {
+        ans->error_type = TERMINATED_ALL;
+        kill(proc_f->pid, SIGKILL);
+        kill(proc_g->pid, SIGKILL);
+    }
+    else {
+        if (ans->ended_g && ans->ended_f) {
+            ans->error_type = NORMAL;
+            kill_input_proc(proc_main, proc_input);
+        }
+        else if (!ans->f_value && !ans->g_value)
+        {
+            if (ans->ended_f) {
+                ans->error_type = TERMINATED_G;
+                kill(proc_g->pid, SIGKILL);
+            }
+            else {
+                ans->error_type = TERMINATED_F;
+                kill(proc_f->pid, SIGKILL);
+            }
+        }
+        else if (ans->ended_f) {
+            ans->error_type = FASTER_F;
+            kill_input_proc(proc_main, proc_input);
+            kill(proc_g->pid, SIGKILL);
+        }
+        else if (ans->ended_g) {
+            ans->error_type = FASTER_G;
+            kill_input_proc(proc_main, proc_input);
+            kill(proc_f->pid, SIGKILL);
+        }
+    }
+}
+
+struct TAnswer set_select(PTProcess proc_main, PTProcess proc_input, PTProcess proc_f, PTProcess proc_g, int value_x)
+{
+    fd_set read_fds;
+    int return_val;
     bool esc = false;
     struct TAnswer ans;
-    bool f_value, g_value;
+    ans.ended_f = ans.ended_g = ans.f_value = ans.g_value = false;
+    struct TProcess proc_esc;
     while(true)
     {
-        printf("a\n");
+        FD_ZERO(&read_fds);
         if (!esc)
-            retval = select(FD_SETSIZE, &rfds, NULL, NULL, NULL);
+            FD_SET(proc_input->fd[0], &read_fds);
         else
-            retval = select(FD_SETSIZE, &rfds, NULL, NULL, &tv);
-
-        printf("ret = %d\n", retval);
-        if (retval == -1) {
-            printf("error  select()\n");
+            FD_SET(proc_esc.fd[0], &read_fds);
+        FD_SET(proc_f->fd[0], &read_fds);
+        FD_SET(proc_g->fd[0], &read_fds);
+        return_val = select(FD_SETSIZE, &read_fds, NULL, NULL, NULL);
+        if (return_val == -1){
+            exit(EXIT_FAILURE);
         }
-        else if (retval)
-        {
-            if (FD_ISSET(proc_input->fd[0], &rfds)) {
-                printf("inp\n");
+        else if (return_val) {
+            if (FD_ISSET(proc_f->fd[0], &read_fds)) {
+                ans.f_value = read_from_pipe(proc_f->fd[0]);
+                ans.ended_f = true;
+                if (ans.ended_g || ans.f_value)
+                    break;
+            } else if (FD_ISSET(proc_g->fd[0], &read_fds)) {
+                ans.g_value = read_from_pipe(proc_g->fd[0]);
+                ans.ended_g = true;
+                if (ans.ended_f || ans.g_value)
+                    break;
+            } else if (FD_ISSET(proc_input->fd[0], &read_fds)) {
+                printf("Escape detect\n");
                 esc = true;
-                tv.tv_sec = 2;
-                FD_ZERO(&rfds);
-                FD_SET(proc_f->fd[0], &rfds);
-                FD_SET(proc_g->fd[0], &rfds);
-                //TO DO
+                bool temp = read_from_pipe(proc_input->fd[0]);
+                start_process(proc_main, &proc_esc, PROC_ESC, 0);
             }
-            else if (FD_ISSET(proc_f->fd[0], &rfds))
-            {
-                ++counter;
-                f_value = (bool)read_from_pipe(proc_f->fd[0]);
-                if (counter == 2)
+            else if (FD_ISSET(proc_esc.fd[0], &read_fds)) {
+                printf("Termination detected\n");
+                esc = false;
+                bool terminate = read_from_pipe(proc_esc.fd[0]);
+                if (terminate)
                     break;
-                FD_ZERO(&rfds);
-                FD_SET(proc_input->fd[0], &rfds);
-                FD_SET(proc_g->fd[0], &rfds);
-                if (f_value)
-                {
-                    kill(proc_input->pid, SIGKILL);
-                    kill(proc_g->pid, SIGKILL);
-                    ans.error_type = 1;
-                    ans.value = f_value;
-                    return ans;
-                }
-            }
-            else if (FD_ISSET(proc_g->fd[0], &rfds))
-            {
-                ++counter;
-                g_value = (bool)read_from_pipe(proc_g->fd[0]);
-                if (counter == 2)
-                    break;
-                FD_ZERO(&rfds);
-                FD_SET(proc_input->fd[0], &rfds);
-                FD_SET(proc_f->fd[0], &rfds);
-                if (g_value)
-                {
-                    kill(proc_input->pid, SIGKILL);
-                    kill(proc_f->pid, SIGKILL);
-                    ans.error_type = 2;
-                    ans.value = g_value;
-                    return ans;
-                }
+                else
+                    start_process(proc_main, proc_input, PROC_INPUT, value_x);
             }
         } else {
-            printf("FFF\n");
-            FD_ZERO(&rfds);
-            FD_SET(proc_input->fd[0], &rfds);
-            FD_SET(proc_f->fd[0], &rfds);
-            FD_SET(proc_g->fd[0], &rfds);
-            tv.tv_sec = 2;
+            break;
         }
     }
-    printf("uuuu %d\n", counter);
-    if (counter == 2)
+
+    kill_processes(&ans, proc_main, proc_input, proc_f, proc_g);
+    return ans;
+}
+
+int work_with_user()
+{
+    int value_x;
+    printf("Input x: ");
+    scanf("%d", &value_x);
+
+    struct TProcess proc_main, proc_input, proc_f, proc_g;
+    if (pipe(proc_main.fd) < 0)
+        return 1;
+    start_process(&proc_main, &proc_input, PROC_INPUT, value_x);
+    start_process(NULL, &proc_f, PROC_F, value_x);
+    start_process(NULL, &proc_g, PROC_G, value_x);
+
+    struct TAnswer answer = set_select(&proc_main, &proc_input, &proc_f, &proc_g, value_x);
+    bool temp;
+    switch (answer.error_type)
     {
-        ans.value = f_value || g_value;
-        ans.error_type = 0;
-        kill(proc_input->pid, SIGKILL);
-        return ans;
+        case NORMAL:
+            temp = answer.f_value || answer.g_value;
+            printf("Counted f = %d and g = %d. Answer is %d.\n", answer.f_value, answer.g_value, temp);
+            break;
+        case FASTER_F:
+            printf("Function f was counted faster and got \"zero\" value. Answer is %d.\n", answer.f_value);
+            break;
+        case FASTER_G:
+            printf("Function g was counted faster and got \"zero\" value. Answer is %d.\n", answer.g_value);
+            break;
+        case TERMINATED_ALL:
+            printf("Function f and g wasn't counted.\n");
+            break;
+        case TERMINATED_F:
+            printf("Function g was counted(f not) and got non-\"zero\" value. g is %d. Answer cannot be determined\n", answer.g_value);
+            break;
+        case TERMINATED_G:
+            printf("Function f was counted(g not) and got non-\"zero\" value. f is %d. Answer cannot be determined\n", answer.f_value);
+            break;
     }
+    return 0;
 }
 
 int main()
 {
-    int variable;
-    printf("Input x: ");
-    scanf("%d", &variable);
-//    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
-    struct TProcess proc_input, proc_f, proc_g;
-    start_process(&proc_input, 1, variable);
-    start_process(&proc_f, 2, variable);
-    start_process(&proc_g, 3, variable);
-
-    struct TAnswer ans = set_select(&proc_input, &proc_f, &proc_g);
-    for (int i = 0;i < 3; ++i) {
-        int status;
-        int corpse = wait(&status);
-        if (corpse == proc_f.pid) {
-            printf("F\n");
-        } else if (corpse == proc_g.pid) {
-            printf("G\n");
-        } else
-            printf("asrerarer\n");
-    }
-    printf("%d %d\n", ans.value, ans.error_type);
-    return 0;
+    return work_with_user();
 }
 
