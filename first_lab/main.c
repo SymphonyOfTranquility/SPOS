@@ -1,7 +1,7 @@
 #include <stdio.h>
+#include <string.h>
 #include <curses.h>
 #include <stdlib.h>
-#include <errno.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -49,15 +49,18 @@ bool read_from_pipe(int file)
 {
     char buff[BUFFSIZE];
     read(file, buff, sizeof(buff));
+    int temp;
     bool x;
-    sscanf(buff, "%d", &x);
+    sscanf(buff, "%d", &temp);
+    x = (bool)temp;
     return x;
 }
 
 void write_to_pipe(int file, bool val)
 {
     char buff[BUFFSIZE];
-    sprintf(buff,"%d", val);
+    int temp = val;
+    sprintf(buff,"%d", temp);
     write(file, buff, strlen(buff)+1);
     return;
 }
@@ -194,50 +197,52 @@ void start_process(PTProcess parent, PTProcess child, int proc_type, int value)
     }
 }
 
+
+void check_to_kill_proc(PTProcess proc)
+{
+    int status;
+    pid_t return_pid = waitpid(proc->pid, &status, WNOHANG);
+    if (return_pid == 0)
+        kill(proc->pid, SIGKILL);
+    return;
+}
+
 void kill_input_proc(PTProcess proc_main, PTProcess proc_input)
 {
     close(proc_main->fd[0]);
     write_to_pipe(proc_main->fd[1], true);
     close(proc_main->fd[1]);
-    usleep(1000);
-    kill(proc_input->pid, SIGKILL);
+    int status;
+    pid_t return_pid = 0;
+    while (return_pid == 0)
+        return_pid = waitpid(proc_input->pid, &status, WNOHANG);
     return;
 }
 
+
 void kill_processes(struct TAnswer *ans, PTProcess proc_main, PTProcess proc_input, PTProcess proc_f, PTProcess proc_g)
 {
+    check_to_kill_proc(proc_f);
+    check_to_kill_proc(proc_g);
+    kill_input_proc(proc_main, proc_input);
     if (!ans->ended_f && !ans->ended_g)
-    {
         ans->error_type = TERMINATED_ALL;
-        kill(proc_f->pid, SIGKILL);
-        kill(proc_g->pid, SIGKILL);
-    }
     else {
-        if (ans->ended_g && ans->ended_f) {
+        if (ans->ended_g && ans->ended_f)
             ans->error_type = NORMAL;
-            kill_input_proc(proc_main, proc_input);
-        }
         else if (ans->f_value && ans->g_value)
         {
             if (ans->ended_f) {
                 ans->error_type = TERMINATED_G;
-                kill(proc_g->pid, SIGKILL);
             }
             else {
                 ans->error_type = TERMINATED_F;
-                kill(proc_f->pid, SIGKILL);
             }
         }
-        else if (ans->ended_f) {
+        else if (ans->ended_f)
             ans->error_type = FASTER_F;
-            kill_input_proc(proc_main, proc_input);
-            kill(proc_g->pid, SIGKILL);
-        }
-        else if (ans->ended_g) {
+        else if (ans->ended_g)
             ans->error_type = FASTER_G;
-            kill_input_proc(proc_main, proc_input);
-            kill(proc_f->pid, SIGKILL);
-        }
     }
 }
 
