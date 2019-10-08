@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <stdbool.h>
+#include "demofuncs.h"
 
 #define BUFFSIZE 100
 #define PROC_INPUT 1
@@ -36,12 +37,12 @@ struct TAnswer
 
 bool f(int x)
 {
-    return (x*x)%2 == 0;
+    return f_func_and(x);
 }
 
 bool g(int x)
 {
-    return (x+1)%2 == 0;
+    return g_func_and(x);
 }
 
 bool read_from_pipe(int file)
@@ -94,7 +95,6 @@ void check_escape(PTProcess parent, int value)
     }
     while (c != 27);
     endwin();
-//    printf("go out\n");
     return;
 }
 
@@ -132,11 +132,13 @@ bool user_terminate(PTProcess parent)
     start_process(NULL, &child, PROC_ESC_INPUT, 0);
     bool ok = true;
     int counter = 60;
+    printw("Would you like to terminate process? y/n\n");
     refresh();
-    do
-    {
-        system("clear");
-        printw("Would you like to terminate process? y/n\n%d sec. left\n", counter);
+    do{
+        printw("\r");
+        if (counter < 10)
+            printw(" ");
+        printw("%d sec. left ", counter);
         refresh();
         FD_ZERO(&read_fds);
         FD_SET(child.fd[0], &read_fds);
@@ -162,7 +164,6 @@ bool user_terminate(PTProcess parent)
     kill(child.pid, SIGKILL);
 
     endwin();
- //   printf("go out esc %d %d\n", counter, ok);
     return ok;
 }
 
@@ -179,10 +180,8 @@ void start_process(PTProcess parent, PTProcess child, int proc_type, int value)
         if (proc_type == PROC_INPUT) {
             check_escape(parent, value);
         } else if (proc_type == PROC_F) {
-            sleep(5);
             ans = f(value);
         } else if (proc_type == PROC_G) {
-            sleep(10);
             ans = g(value);
         } else if (proc_type == PROC_ESC) {
             ans = user_terminate(parent);
@@ -218,7 +217,7 @@ void kill_processes(struct TAnswer *ans, PTProcess proc_main, PTProcess proc_inp
             ans->error_type = NORMAL;
             kill_input_proc(proc_main, proc_input);
         }
-        else if (!ans->f_value && !ans->g_value)
+        else if (ans->f_value && ans->g_value)
         {
             if (ans->ended_f) {
                 ans->error_type = TERMINATED_G;
@@ -248,15 +247,12 @@ struct TAnswer set_select(PTProcess proc_main, PTProcess proc_input, PTProcess p
     int return_val;
     bool esc = false;
     struct TAnswer ans;
-    ans.ended_f = ans.ended_g = ans.f_value = ans.g_value = false;
-    struct TProcess proc_esc;
+    ans.ended_f = ans.ended_g = false;
+    ans.f_value = ans.g_value = true;
     while(true)
     {
         FD_ZERO(&read_fds);
-        if (!esc)
-            FD_SET(proc_input->fd[0], &read_fds);
-        else
-            FD_SET(proc_esc.fd[0], &read_fds);
+        FD_SET(proc_input->fd[0], &read_fds);
         FD_SET(proc_f->fd[0], &read_fds);
         FD_SET(proc_g->fd[0], &read_fds);
         return_val = select(FD_SETSIZE, &read_fds, NULL, NULL, NULL);
@@ -267,27 +263,26 @@ struct TAnswer set_select(PTProcess proc_main, PTProcess proc_input, PTProcess p
             if (FD_ISSET(proc_f->fd[0], &read_fds)) {
                 ans.f_value = read_from_pipe(proc_f->fd[0]);
                 ans.ended_f = true;
-                if (ans.ended_g || ans.f_value)
+                if (ans.ended_g || !ans.f_value)
                     break;
             } else if (FD_ISSET(proc_g->fd[0], &read_fds)) {
                 ans.g_value = read_from_pipe(proc_g->fd[0]);
                 ans.ended_g = true;
-                if (ans.ended_f || ans.g_value)
+                if (ans.ended_f || !ans.g_value)
                     break;
             } else if (FD_ISSET(proc_input->fd[0], &read_fds)) {
-                printf("Escape detect\n");
-                esc = true;
-                bool temp = read_from_pipe(proc_input->fd[0]);
-                start_process(proc_main, &proc_esc, PROC_ESC, 0);
-            }
-            else if (FD_ISSET(proc_esc.fd[0], &read_fds)) {
-                printf("Termination detected\n");
-                esc = false;
-                bool terminate = read_from_pipe(proc_esc.fd[0]);
-                if (terminate)
-                    break;
-                else
-                    start_process(proc_main, proc_input, PROC_INPUT, value_x);
+                if (!esc) {
+                    esc = true;
+                    bool temp = read_from_pipe(proc_input->fd[0]);
+                    start_process(proc_main, proc_input, PROC_ESC, 0);
+                } else {
+                    esc = false;
+                    bool terminate = read_from_pipe(proc_input->fd[0]);
+                    if (terminate)
+                        break;
+                    else
+                        start_process(proc_main, proc_input, PROC_INPUT, value_x);
+                }
             }
         } else {
             break;
@@ -316,23 +311,23 @@ int work_with_user()
     switch (answer.error_type)
     {
         case NORMAL:
-            temp = answer.f_value || answer.g_value;
+            temp = answer.f_value && answer.g_value;
             printf("Counted f = %d and g = %d. Answer is %d.\n", answer.f_value, answer.g_value, temp);
             break;
         case FASTER_F:
-            printf("Function f was counted faster and got \"zero\" value. Answer is %d.\n", answer.f_value);
+            printf("Function f was counted faster and got zero value. Answer is %d.\n", answer.f_value);
             break;
         case FASTER_G:
-            printf("Function g was counted faster and got \"zero\" value. Answer is %d.\n", answer.g_value);
+            printf("Function g was counted faster and got zero value. Answer is %d.\n", answer.g_value);
             break;
         case TERMINATED_ALL:
             printf("Function f and g wasn't counted.\n");
             break;
         case TERMINATED_F:
-            printf("Function g was counted(f not) and got non-\"zero\" value. g is %d. Answer cannot be determined\n", answer.g_value);
+            printf("Function g was counted(f not) and got non-zero value. g is %d. Answer cannot be determined\n", answer.g_value);
             break;
         case TERMINATED_G:
-            printf("Function f was counted(g not) and got non-\"zero\" value. f is %d. Answer cannot be determined\n", answer.f_value);
+            printf("Function f was counted(g not) and got non-zero value. f is %d. Answer cannot be determined\n", answer.f_value);
             break;
     }
     return 0;
