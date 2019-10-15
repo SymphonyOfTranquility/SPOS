@@ -65,10 +65,10 @@ void write_to_pipe(int file, bool val)
     return;
 }
 
-void check_escape(PTProcess parent, int value)
+void check_escape(PTProcess parent, int value, WINDOW* work_window)
 {
-    initscr();
-    printw("Value x is %d.\nClick on Esc to terminate a process.\n", value);
+    clear();
+    wprintw(work_window, "Value x is %d.\nComputing.\nClick on Esc to terminate a process.\n", value);
     refresh();
     keypad(stdscr,TRUE);
     noecho();
@@ -89,7 +89,7 @@ void check_escape(PTProcess parent, int value)
         }
         else if (return_val){
             if (FD_ISSET(0, &read_fds))
-                c = getch();
+                c = wgetch(work_window);
             else {
                 read_from_pipe(parent->fd[0]);
                 break;
@@ -97,19 +97,18 @@ void check_escape(PTProcess parent, int value)
         }
     }
     while (c != 27);
-    endwin();
     return;
 }
 
 
-void start_process(PTProcess parent, PTProcess child, int proc_type, int value);
+void start_process(PTProcess parent, PTProcess child, int proc_type, int value, WINDOW* work_window);
 
-bool user_input_terminate()
+bool user_input_terminate(WINDOW* work_window)
 {
     bool ok = true;
     char c;
     do {
-        c = getchar();
+        c = wgetch(work_window);
         if (c == 'y') {
             ok = true;
             break;
@@ -122,9 +121,17 @@ bool user_input_terminate()
     return ok;
 }
 
-bool user_terminate(PTProcess parent)
+bool user_terminate(PTProcess parent, WINDOW* work_window)
 {
-    initscr();
+    clear();
+    wrefresh(work_window);
+    int h, w;
+    getmaxyx(work_window, h, w);
+    WINDOW* term_window = derwin(work_window, 4, 44, h/2-2, w/2-22);
+    box( term_window, ACS_VLINE, ACS_HLINE );
+    wrefresh(term_window);
+
+
     fd_set read_fds;
     int return_val;
     struct timeval timeout;
@@ -132,24 +139,28 @@ bool user_terminate(PTProcess parent)
     timeout.tv_usec = 0;
     char c = 0;
     struct TProcess child;
-    start_process(NULL, &child, PROC_ESC_INPUT, 0);
+    start_process(NULL, &child, PROC_ESC_INPUT, 0, term_window);
     bool ok = true;
     int counter = 60;
-    printw("Would you like to terminate process? y/n\n");
-    refresh();
+    wmove(term_window, 1, 1);
+    wprintw(term_window, "Would you like to terminate process? y/n");
+    wmove(term_window, 2, 1);
+    wprintw(term_window, "%d sec. left ", counter);
+    wrefresh(term_window);
     do{
-        printw("\r");
+        wmove(term_window, 2, 1);
         if (counter < 10)
-            printw(" ");
-        printw("%d sec. left ", counter);
-        refresh();
+            wprintw(term_window, " ");
+        wprintw(term_window, "%d", counter);
+        wmove(term_window, 2, 2);
+        wrefresh(term_window);
         FD_ZERO(&read_fds);
         FD_SET(child.fd[0], &read_fds);
         FD_SET(parent->fd[0], &read_fds);
         timeout.tv_sec = 1;
         return_val = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout);
         if (return_val == -1) {
-            endwin();
+            wstandend(term_window);
             exit(EXIT_FAILURE);
         } else if (return_val) {
             if (FD_ISSET(child.fd[0], &read_fds)) {
@@ -165,12 +176,11 @@ bool user_terminate(PTProcess parent)
     }
     while (counter != 0);
     kill(child.pid, SIGKILL);
-
-    endwin();
+    wstandend(term_window);
     return ok;
 }
 
-void start_process(PTProcess parent, PTProcess child, int proc_type, int value)
+void start_process(PTProcess parent, PTProcess child, int proc_type, int value, WINDOW* work_window)
 {
     if (pipe(child->fd) < 0)
         exit(1);
@@ -181,16 +191,16 @@ void start_process(PTProcess parent, PTProcess child, int proc_type, int value)
         close(child->fd[0]);
         bool ans = false;
         if (proc_type == PROC_INPUT) {
-            check_escape(parent, value);
+            check_escape(parent, value, work_window);
         } else if (proc_type == PROC_F) {
             ans = f(value);
         } else if (proc_type == PROC_G) {
             ans = g(value);
         } else if (proc_type == PROC_ESC) {
-            ans = user_terminate(parent);
+            ans = user_terminate(parent, work_window);
         }
         else if (proc_type == PROC_ESC_INPUT)
-            ans = user_input_terminate();
+            ans = user_input_terminate(work_window);
         write_to_pipe(child->fd[1], ans);
         close(child->fd[1]);
         exit(EXIT_SUCCESS);
@@ -246,7 +256,12 @@ void kill_processes(struct TAnswer *ans, PTProcess proc_main, PTProcess proc_inp
     }
 }
 
-struct TAnswer set_select(PTProcess proc_main, PTProcess proc_input, PTProcess proc_f, PTProcess proc_g, int value_x)
+struct TAnswer set_select(PTProcess proc_main,
+        PTProcess proc_input,
+        PTProcess proc_f,
+        PTProcess proc_g,
+        int value_x,
+        WINDOW* work_window)
 {
     fd_set read_fds;
     int return_val;
@@ -279,14 +294,14 @@ struct TAnswer set_select(PTProcess proc_main, PTProcess proc_input, PTProcess p
                 if (!esc) {
                     esc = true;
                     bool temp = read_from_pipe(proc_input->fd[0]);
-                    start_process(proc_main, proc_input, PROC_ESC, 0);
+                    start_process(proc_main, proc_input, PROC_ESC, 0, work_window);
                 } else {
                     esc = false;
                     bool terminate = read_from_pipe(proc_input->fd[0]);
                     if (terminate)
                         break;
                     else
-                        start_process(proc_main, proc_input, PROC_INPUT, value_x);
+                        start_process(proc_main, proc_input, PROC_INPUT, value_x, work_window);
                 }
             }
         } else {
@@ -301,40 +316,49 @@ struct TAnswer set_select(PTProcess proc_main, PTProcess proc_input, PTProcess p
 int work_with_user()
 {
     int value_x;
-    printf("Input x: ");
-    scanf("%d", &value_x);
-
-    struct TProcess proc_main, proc_input, proc_f, proc_g;
-    if (pipe(proc_main.fd) < 0)
-        return 1;
-    start_process(&proc_main, &proc_input, PROC_INPUT, value_x);
-    start_process(NULL, &proc_f, PROC_F, value_x);
-    start_process(NULL, &proc_g, PROC_G, value_x);
-
-    struct TAnswer answer = set_select(&proc_main, &proc_input, &proc_f, &proc_g, value_x);
-    bool temp;
-    switch (answer.error_type)
+    WINDOW* work_window = initscr();
+    wprintw(work_window, "Input x:\n");
+    while (true)
     {
-        case NORMAL:
-            temp = answer.f_value && answer.g_value;
-            printf("Counted f = %d and g = %d. Answer is %d.\n", answer.f_value, answer.g_value, temp);
+        wscanw(work_window, "%d", &value_x);
+        if (value_x == -1)
             break;
-        case FASTER_F:
-            printf("Function f was counted faster and got zero value. Answer is %d.\n", answer.f_value);
-            break;
-        case FASTER_G:
-            printf("Function g was counted faster and got zero value. Answer is %d.\n", answer.g_value);
-            break;
-        case TERMINATED_ALL:
-            printf("Function f and g wasn't counted.\n");
-            break;
-        case TERMINATED_F:
-            printf("Function g was counted(f not) and got non-zero value. g is %d. Answer cannot be determined\n", answer.g_value);
-            break;
-        case TERMINATED_G:
-            printf("Function f was counted(g not) and got non-zero value. f is %d. Answer cannot be determined\n", answer.f_value);
-            break;
+
+        struct TProcess proc_main, proc_input, proc_f, proc_g;
+        if (pipe(proc_main.fd) < 0)
+            return 1;
+        start_process(&proc_main, &proc_input, PROC_INPUT, value_x, work_window);
+        start_process(NULL, &proc_f, PROC_F, value_x, NULL);
+        start_process(NULL, &proc_g, PROC_G, value_x, NULL);
+
+        struct TAnswer answer = set_select(&proc_main, &proc_input, &proc_f, &proc_g, value_x, work_window);
+        clear();
+        wprintw(work_window, "Value x is %d\n", value_x);
+        bool temp;
+        switch (answer.error_type) {
+            case NORMAL:
+                temp = answer.f_value && answer.g_value;
+                wprintw(work_window, "Answer is %d. (f = %d and g = %d).\n", temp, answer.f_value, answer.g_value);
+                break;
+            case FASTER_F:
+                wprintw(work_window, "Answer is %d. (f = %d, g = UNDEFINED)\n", answer.f_value, answer.f_value);
+                break;
+            case FASTER_G:
+                wprintw(work_window, "Answer is %d. (f = UNDEFINED, g = %d)\n", answer.g_value, answer.g_value);
+                break;
+            case TERMINATED_ALL:
+                wprintw(work_window, "Answer is UNDEFINED. f and g were terminated.\n");
+                break;
+            case TERMINATED_F:
+                wprintw(work_window, "Answer is UNDEFINED. f - terminated, g = %d.\n", answer.g_value);
+                break;
+            case TERMINATED_G:
+                wprintw(work_window, "Answer is UNDEFINED. f = %d, g - terminated.\n", answer.f_value);
+                break;
+        }
+        wprintw(work_window, "\nInput new x (to exit input -1):\n");
     }
+    endwin();
     return 0;
 }
 
