@@ -230,29 +230,26 @@ void kill_input_proc(PTProcess proc_main, PTProcess proc_input)
 }
 
 
-void kill_processes(struct TAnswer *ans, PTProcess proc_main, PTProcess proc_input, PTProcess proc_f, PTProcess proc_g)
+void output_ans(struct TAnswer *ans, WINDOW* work_window)
 {
-    check_to_kill_proc(proc_f);
-    check_to_kill_proc(proc_g);
-    kill_input_proc(proc_main, proc_input);
     if (!ans->ended_f && !ans->ended_g)
-        ans->error_type = TERMINATED_ALL;
+        wprintw(work_window, "Answer is UNDEFINED, because f and g weren't counted.\n");
     else {
         if (ans->ended_g && ans->ended_f)
-            ans->error_type = NORMAL;
+            wprintw(work_window, "Answer is %d.\n", ans->g_value && ans->f_value);
         else if (ans->f_value && ans->g_value)
         {
             if (ans->ended_f) {
-                ans->error_type = TERMINATED_G;
+                wprintw(work_window, "Answer is UNDEFINED, because g wasn't counted.\n");
             }
             else {
-                ans->error_type = TERMINATED_F;
+                wprintw(work_window, "Answer is UNDEFINED, because f wasn't counted.\n");
             }
         }
         else if (ans->ended_f)
-            ans->error_type = FASTER_F;
+            wprintw(work_window, "Answer is %d.\n", ans->f_value);
         else if (ans->ended_g)
-            ans->error_type = FASTER_G;
+            wprintw(work_window, "Answer is %d.\n", ans->g_value);
     }
 }
 
@@ -307,9 +304,7 @@ struct TAnswer set_select(PTProcess proc_main,
         } else {
             break;
         }
-    }
-
-    kill_processes(&ans, proc_main, proc_input, proc_f, proc_g);
+    }    
     return ans;
 }
 
@@ -332,30 +327,16 @@ int work_with_user()
         start_process(NULL, &proc_g, PROC_G, value_x, NULL);
 
         struct TAnswer answer = set_select(&proc_main, &proc_input, &proc_f, &proc_g, value_x, work_window);
-        clear();
-        wprintw(work_window, "Value x is %d\n", value_x);
+        
+        check_to_kill_proc(&proc_f);
+        check_to_kill_proc(&proc_g);
+        kill_input_proc(&proc_main, &proc_input);
+        
         bool temp;
-        switch (answer.error_type) {
-            case NORMAL:
-                temp = answer.f_value && answer.g_value;
-                wprintw(work_window, "Answer is %d. (f = %d and g = %d).\n", temp, answer.f_value, answer.g_value);
-                break;
-            case FASTER_F:
-                wprintw(work_window, "Answer is %d. (f = %d, g = UNDEFINED)\n", answer.f_value, answer.f_value);
-                break;
-            case FASTER_G:
-                wprintw(work_window, "Answer is %d. (f = UNDEFINED, g = %d)\n", answer.g_value, answer.g_value);
-                break;
-            case TERMINATED_ALL:
-                wprintw(work_window, "Answer is UNDEFINED. f and g were terminated.\n");
-                break;
-            case TERMINATED_F:
-                wprintw(work_window, "Answer is UNDEFINED. f - terminated, g = %d.\n", answer.g_value);
-                break;
-            case TERMINATED_G:
-                wprintw(work_window, "Answer is UNDEFINED. f = %d, g - terminated.\n", answer.f_value);
-                break;
-        }
+        clear();
+        wprintw(work_window, "Value x is %d.\n", value_x);
+        output_ans(&answer, work_window);
+
         wprintw(work_window, "\nInput new x (to exit input -1):\n");
     }
     endwin();
