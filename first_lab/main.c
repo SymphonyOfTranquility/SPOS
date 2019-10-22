@@ -15,13 +15,6 @@
 #define PROC_F 4
 #define PROC_G 5
 
-#define NORMAL 10
-#define FASTER_F 11
-#define FASTER_G 12
-#define TERMINATED_ALL 13
-#define TERMINATED_F 14
-#define TERMINATED_G 15
-
 typedef struct TProcess
 {
     pid_t pid;      //process id
@@ -30,7 +23,6 @@ typedef struct TProcess
 
 struct TAnswer
 {
-    int error_type;
     bool f_value, ended_f;
     bool g_value, ended_g;
 };
@@ -107,6 +99,7 @@ bool user_input_terminate(WINDOW* work_window)
 {
     bool ok = true;
     char c;
+    noecho();
     do {
         c = wgetch(work_window);
         if (c == 'y') {
